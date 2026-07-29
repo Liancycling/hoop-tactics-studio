@@ -247,6 +247,9 @@ body {
   border-radius: var(--radius-md);
   overflow: hidden;
   border: 2px solid #23314c;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 svg.basketball-court {

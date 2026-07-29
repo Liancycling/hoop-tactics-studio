@@ -1,14 +1,14 @@
-// 籃球戰術 SVG 繪製、觸控拖曳 (Touch & Mouse Drag) 與動畫插值渲染引擎
+// 籃球戰術 SVG 繪製、雙重 Pointer/Touch/Mouse 觸控拖曳與動畫插值渲染引擎
 export class TacticsCourtRenderer {
   constructor(svgContainer, options = {}) {
     this.container = svgContainer;
     this.options = options;
     this.currentTactic = null;
     this.progress = 0; // 0 ~ 100
-    this.onPositionUpdate = options.onPositionUpdate || null; // 拖曳位置更新回調
+    this.onPositionUpdate = options.onPositionUpdate || null;
 
     this.draggedPlayerId = null;
-    this.bindTouchEvents();
+    this.bindPointerAndTouchEvents();
   }
 
   setTactic(tactic) {
@@ -22,7 +22,6 @@ export class TacticsCourtRenderer {
     this.render();
   }
 
-  // 根據 progress 計算兩 Keyframe 間位置插值 (Lerp)
   getCurrentFrameState() {
     if (!this.currentTactic || !this.currentTactic.keyframes.length) return null;
     
@@ -66,19 +65,31 @@ export class TacticsCourtRenderer {
     };
   }
 
-  // 將觸控/滑鼠螢幕座標轉換為球場百分比 (x: 0~100, y: 0~100)
+  // 將 Pointer/Touch/Mouse 座標轉換為球場座標 (x: 0~100, y: 0~100)
   eventToCourtCoords(evt) {
     const svgEl = this.container.querySelector('svg');
     if (!svgEl) return null;
 
     const rect = svgEl.getBoundingClientRect();
-    const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
-    const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+    
+    let clientX, clientY;
+    if (evt.touches && evt.touches.length > 0) {
+      clientX = evt.touches[0].clientX;
+      clientY = evt.touches[0].clientY;
+    } else if (evt.changedTouches && evt.changedTouches.length > 0) {
+      clientX = evt.changedTouches[0].clientX;
+      clientY = evt.changedTouches[0].clientY;
+    } else {
+      clientX = evt.clientX;
+      clientY = evt.clientY;
+    }
+
+    if (clientX === undefined || clientY === undefined) return null;
 
     const relX = clientX - rect.left;
     const relY = clientY - rect.top;
 
-    // SVG viewBox 0 0 1000 800, 邊框 50, 40 到 950, 760 (寬 900, 高 720)
+    // SVG viewBox 0 0 1000 800, 內部球場 50,40 到 950,760 (寬 900, 高 720)
     const svgX = (relX / rect.width) * 1000;
     const svgY = (relY / rect.height) * 800;
 
@@ -91,18 +102,27 @@ export class TacticsCourtRenderer {
     return { x: posX, y: posY };
   }
 
-  bindTouchEvents() {
+  bindPointerAndTouchEvents() {
     const startDrag = (evt) => {
       const playerGroup = evt.target.closest('.player-group');
       if (!playerGroup) return;
 
-      evt.preventDefault();
+      if (evt.cancelable) evt.preventDefault();
+
       this.draggedPlayerId = playerGroup.getAttribute('data-player-id');
+
+      // 捕捉 Pointer 以防平板過早釋放
+      if (evt.pointerId !== undefined && playerGroup.setPointerCapture) {
+        try { playerGroup.setPointerCapture(evt.pointerId); } catch (_) {}
+      }
+
+      this.render();
     };
 
     const moveDrag = (evt) => {
       if (!this.draggedPlayerId || !this.currentTactic) return;
-      evt.preventDefault();
+
+      if (evt.cancelable) evt.preventDefault();
 
       const coords = this.eventToCourtCoords(evt);
       if (!coords) return;
@@ -112,7 +132,6 @@ export class TacticsCourtRenderer {
 
       const currentKf = this.currentTactic.keyframes[state.currentStepIndex];
       if (currentKf && currentKf.positions[this.draggedPlayerId]) {
-        // 即時更新當前步驟該球員座標
         currentKf.positions[this.draggedPlayerId].x = coords.x;
         currentKf.positions[this.draggedPlayerId].y = coords.y;
 
@@ -123,20 +142,29 @@ export class TacticsCourtRenderer {
       }
     };
 
-    const endDrag = () => {
-      this.draggedPlayerId = null;
+    const endDrag = (evt) => {
+      if (this.draggedPlayerId) {
+        this.draggedPlayerId = null;
+        this.render();
+      }
     };
 
-    // 滑鼠事件
-    this.container.addEventListener('mousedown', startDrag);
-    window.addEventListener('mousemove', moveDrag);
-    window.addEventListener('mouseup', endDrag);
+    // 1. Pointer Events (Modern Mobile & Tablet Standards: iPad Safari, Chrome, Surface)
+    this.container.addEventListener('pointerdown', startDrag);
+    window.addEventListener('pointermove', moveDrag);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
 
-    // 平板/手機觸控事件 (Touch Events)
+    // 2. Fallback Touch Events
     this.container.addEventListener('touchstart', startDrag, { passive: false });
     window.addEventListener('touchmove', moveDrag, { passive: false });
     window.addEventListener('touchend', endDrag);
     window.addEventListener('touchcancel', endDrag);
+
+    // 3. Fallback Mouse Events
+    this.container.addEventListener('mousedown', startDrag);
+    window.addEventListener('mousemove', moveDrag);
+    window.addEventListener('mouseup', endDrag);
   }
 
   render() {
@@ -146,7 +174,7 @@ export class TacticsCourtRenderer {
     if (!state) return;
 
     let svgHtml = `
-      <svg class="basketball-court" viewBox="0 0 1000 800" xmlns="http://www.w3.org/2000/svg">
+      <svg class="basketball-court" viewBox="0 0 1000 800" xmlns="http://www.w3.org/2000/svg" style="touch-action: none; -webkit-user-select: none; user-select: none;">
         <defs>
           <filter id="glow-offense" x="-30%" y="-30%" width="160%" height="160%">
             <feGaussianBlur stdDeviation="6" result="blur" />
@@ -187,7 +215,7 @@ export class TacticsCourtRenderer {
 
     svgHtml += this.renderTacticalPaths(state);
 
-    // 繪製防守球員 (Defense)
+    // 繪製防守球員 (Defense) - 放大觸控熱區 (Hitbox 40px)
     this.currentTactic.players.defense.forEach(player => {
       const pos = state.positions[player.id];
       if (pos) {
@@ -196,15 +224,18 @@ export class TacticsCourtRenderer {
         const isDragged = (this.draggedPlayerId === player.id);
 
         svgHtml += `
-          <g class="player-group" data-player-id="${player.id}" transform="translate(${cx}, ${cy})" style="cursor: grab; touch-action: none;">
-            <circle r="${isDragged ? 26 : 22}" fill="#2d151e" stroke="#ff5252" stroke-width="${isDragged ? 5 : 3}" filter="url(#glow-defense)" />
-            <text x="0" y="6" text-anchor="middle" fill="#ff5252" font-size="14" font-weight="900" font-family="Inter, sans-serif">${player.label}</text>
+          <g class="player-group" data-player-id="${player.id}" transform="translate(${cx}, ${cy})" style="cursor: move; touch-action: none; -webkit-tap-highlight-color: transparent;">
+            <!-- 隱形透明觸控熱區 (Hitbox r=42) -->
+            <circle r="42" fill="transparent" />
+            <!-- 實體球員圖層 -->
+            <circle r="${isDragged ? 30 : 24}" fill="#2d151e" stroke="#ff5252" stroke-width="${isDragged ? 6 : 3.5}" filter="url(#glow-defense)" />
+            <text x="0" y="6" text-anchor="middle" fill="#ff5252" font-size="15" font-weight="900" font-family="Inter, sans-serif" pointer-events="none">${player.label}</text>
           </g>
         `;
       }
     });
 
-    // 繪製進攻球員 (Offense)
+    // 繪製進攻球員 (Offense) - 放大觸控熱區 (Hitbox 45px)
     this.currentTactic.players.offense.forEach(player => {
       const pos = state.positions[player.id];
       if (pos) {
@@ -214,16 +245,19 @@ export class TacticsCourtRenderer {
         const isDragged = (this.draggedPlayerId === player.id);
 
         svgHtml += `
-          <g class="player-group" data-player-id="${player.id}" transform="translate(${cx}, ${cy})" style="cursor: grab; touch-action: none;">
-            <circle r="${isDragged ? 28 : 24}" fill="#132e23" stroke="#38ef7d" stroke-width="${isDragged ? 5 : 3.5}" filter="url(#glow-offense)" />
-            <text x="0" y="6" text-anchor="middle" fill="#38ef7d" font-size="14" font-weight="900" font-family="Inter, sans-serif">${player.id}</text>
+          <g class="player-group" data-player-id="${player.id}" transform="translate(${cx}, ${cy})" style="cursor: move; touch-action: none; -webkit-tap-highlight-color: transparent;">
+            <!-- 隱形透明觸控熱區 (Hitbox r=45) -->
+            <circle r="45" fill="transparent" />
+            <!-- 實體球員圖層 -->
+            <circle r="${isDragged ? 32 : 26}" fill="#132e23" stroke="#38ef7d" stroke-width="${isDragged ? 6 : 4}" filter="url(#glow-offense)" />
+            <text x="0" y="6" text-anchor="middle" fill="#38ef7d" font-size="15" font-weight="900" font-family="Inter, sans-serif" pointer-events="none">${player.id}</text>
             
             ${hasBall ? `
-              <circle r="30" fill="none" stroke="#ff9100" stroke-width="2.5" stroke-dasharray="6 4">
+              <circle r="32" fill="none" stroke="#ff9100" stroke-width="2.5" stroke-dasharray="6 4" pointer-events="none">
                 <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="4s" repeatCount="indefinite"/>
               </circle>
-              <circle cx="20" cy="-20" r="12" fill="#ff9100" stroke="#ffffff" stroke-width="2" filter="url(#glow-ball)" />
-              <path d="M 12 -20 L 28 -20 M 20 -28 L 20 -12" stroke="#6b2b00" stroke-width="1.5" />
+              <circle cx="22" cy="-22" r="13" fill="#ff9100" stroke="#ffffff" stroke-width="2" filter="url(#glow-ball)" pointer-events="none" />
+              <path d="M 14 -22 L 30 -22 M 22 -30 L 22 -14" stroke="#6b2b00" stroke-width="1.5" pointer-events="none" />
             ` : ''}
           </g>
         `;
